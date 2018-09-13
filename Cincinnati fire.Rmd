@@ -1,0 +1,189 @@
+---
+title: "Cincinnati fire"
+author: "Saikat Banerjee"
+date: "April 12, 2018"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+```{r}
+# Loading the required packages for data analysis
+library(lubridate)
+library(tidyverse)
+library(ggmap)
+```
+
+```{r}
+# Reading in the data
+cin_fire <- read_csv("~/Cincinnati fire/Cfire.csv")
+```
+
+```{r}
+#Let's see what the framework of the dataset looks like
+glimpse(cin_fire)
+```
+
+```{r}
+#renaming cols of the cin_fire
+names(cin_fire) <- c("Address", "Latitude", "Longitude", "Agency", 
+                     "Create.datetime", "Disposition.text", "Event.no",
+                     "Inc.ID", "Inc.des", "Neighborhood", "PU.arrival.datetime",
+                     "Beat", "Close.datetime", "PU.dispatch.datetime",
+                     "CFD.Inc.type", "CFD.inc.type.group", "Council.neighborhood")
+# Parsing datetime using lubridate
+cin_fire$Create.datetime <- parse_date_time(cin_fire$Create.datetime, 
+                            "%m/%d/%y %I:%M:%S %p")
+# Dividing datetime into useful features
+cin_fire$Month <- month(cin_fire$Create.datetime, label = T)
+cin_fire$DayoftheWeek <- wday(cin_fire$Create.datetime, label = T)
+cin_fire$Hour <- hour(cin_fire$Create.datetime)
+
+```
+
+```{r}
+# Making dataviz for trends in the fire calls
+cin_fire %>% group_by(Month) %>% summarise(n.calls = n()) %>% 
+  ggplot(mapping = aes(x = Month, y = n.calls)) + 
+  geom_histogram(stat = "identity") + labs(y = "Fire call frequency",
+    x = "Month", title = "Monthly distribution of fire calls") 
+
+cin_fire %>% group_by(DayoftheWeek) %>% summarise(n.calls = n()) %>% 
+  ggplot(mapping = aes(x = DayoftheWeek, y = n.calls)) + 
+  geom_histogram(stat = "identity") + labs(y = "Fire call frequency",
+    x = "Day", title = "Daily distribution of fire calls")
+
+cin_fire %>% group_by(Hour) %>% summarise(n.calls = n()) %>% 
+  ggplot(mapping = aes(x = Hour, y = n.calls)) + 
+  geom_histogram(stat = "identity") + labs(y = "Fire call frequency",
+    x = "Hour", title = "Hourly distribution of fire calls")
+
+# Hourly trends are evident with late afternoon being the busiest of times and early  
+# morning the lightest time; no significant patterns in daily data; monthly data show
+# that there are greater number of calls between Jan-May compared with rest of the year. 
+
+```
+
+```{r}
+# Selecting the coordinates and other variables for spatial visualizations
+cin_fire_maps <- cin_fire %>% select(Longitude, Latitude)
+
+cin_fire_maps <- cin_fire_maps %>% filter(!is.na(Longitude) | !is.na(Latitude))
+
+
+cin_code <- as.numeric(geocode("Cincinnati"))
+## The corresponding googlemap is imported and used here.
+cin_map <- ggmap(get_googlemap(center = cin_code, scale = 2, zoom = 11, 
+                  extent = "device"))
+
+cin_map + geom_jitter(aes(x = Longitude, y = Latitude), color = "red", 
+                          alpha = 0.01, data = cin_fire_maps)
+
+```
+
+```{r}
+##The heat density maps are used to qualify the areas with most fire calls.
+cin_map + stat_density2d(data = cin_fire_maps,
+                  aes(x = Longitude, y = Latitude, fill = ..level.., alpha = ..level..),
+                  bins = 64, geom = "polygon") + scale_fill_gradient(low = "blue", high = "red") + 
+  scale_alpha(guide = 'none')
+```
+
+```{r}
+## Parsing the date and time for dispatch and closing of the event
+cin_fire$PU.arrival.datetime <- parse_date_time(cin_fire$PU.arrival.datetime, 
+                                            "%m/%d/%y %I:%M:%S %p")
+cin_fire$PU.dispatch.datetime <- parse_date_time(cin_fire$PU.dispatch.datetime,
+                                                 "%m/%d/%y %I:%M:%S %p")
+cin_fire$Close.datetime <- parse_date_time(cin_fire$Close.datetime,
+                                           "%m/%d/%y %I:%M:%S %p")
+# Creating a new variable PU.time, which is time taken from dispatch upto arrival
+# of help to gauge the efficiency of the department
+cin_fire$PU.time <- cin_fire$PU.arrival.datetime - cin_fire$PU.dispatch.datetime
+
+cin_fire$PU.time %>% as.integer() %>% summary()
+## Interesting! PU.time has large negative values, which is unrealistic
+## because dispatch time cannot be larger than arrival time. Upon careful 
+## review of the rows with very large negative PU.time, it was found that 
+## some of the dates have been wrongly entered. This has to be taken care of.
+```
+```{r}
+# Number of possible wrong entry in the dataset
+num_wrong_entry <- sum(cin_fire$PU.dispatch.datetime > cin_fire$PU.arrival.datetime,
+                       na.rm = T)
+id_wrong_entry <- which(cin_fire$PU.dispatch.datetime > cin_fire$PU.arrival.datetime)
+# The number is less than 4% of the data. Therefore, the misentered data was decided
+# to be removed.
+cin_fire_new <- cin_fire [-(id_wrong_entry),]
+# Similar steps carried out with the new dataset to get a glimpse
+cin_fire_new$PU.time <- cin_fire_new$PU.arrival.datetime - cin_fire_new$PU.dispatch.datetime
+# What does the new summary look like?
+cin_fire_new$PU.time %>% as.integer() %>% summary()
+```
+
+```{r}
+# Let's quickly see the distribution of PU.time
+hist(cin_fire_new$PU.time %>% as.integer(), xlab = "Arrival time after dispatch",
+     main = "Distribution of arrival times") 
+# Extraordinary outliers, subsetting required to get a clearer picture
+hist(cin_fire_new$PU.time %>% as.integer() %>% .[cin_fire_new$PU.time < 2000], xlab = "Arrival time after dispatch", main = "Distribution of arrival times")
+# Still not great, zooming in further
+hist(cin_fire_new$PU.time %>% as.integer() %>% .[cin_fire_new$PU.time < 1000], xlab = "Arrival time after dispatch", main = "Distribution of arrival times")
+# Okay, this is much better! We can see that the time taken by fire officials vary 
+# mostly between 150 and 600 seconds. 
+```
+
+```{r} 
+# Selecting the coordinates for spatial visualizations of PU.time variable
+
+cin_fire_new$PU.time <- as.numeric(cin_fire_new$PU.time)
+
+cin_fire_time <- cin_fire_new %>% select(Longitude, Latitude, PU.time, Agency, Month,DayoftheWeek, Hour) %>% filter(!is.na(Longitude) | !is.na(Latitude)) %>% filter(!is.na(PU.time))
+
+##The heat density maps are used to qualify the areas with most fire calls.
+cin_map + geom_jitter(aes(x = Longitude, y = Latitude, color = PU.time),
+                      data = cin_fire_time, alpha = .8) + scale_color_gradientn(colors = terrain.colors(20))
+```
+```{r}
+# The above plot is not very informative as majority of the points are below 1000 
+# if we recall from the histogram of the distribution of PU.time.
+
+# Selecting the coordinates for spatial visualizations of PU.time variable, keeping
+# the value of the variable below 1000.
+
+cin_fire_time <- cin_fire_time %>% filter(PU.time < 1000)
+
+##The heat density maps are used to qualify the areas with most fire calls.
+cin_map + geom_jitter(aes(x = Longitude, y = Latitude, color = PU.time),
+                      data = cin_fire_time, alpha = .8) + scale_color_gradientn(colors = terrain.colors(20))
+```
+```{r}
+## Okay! The above plot is a much better visualization of the arrival times on the city map.
+
+# Let's take this one step further by binning PU.time and create a more 
+# focused data visualization based on different binned classes of arrival times.
+# Redefining cin_fire_new_maps to include all the data
+cin_fire_time_bin <- cin_fire_new %>% select(Longitude, Latitude, PU.time, Agency, Month, 
+     DayoftheWeek, Hour) %>%  filter(!is.na(Longitude) | !is.na(Latitude)) %>%        
+      filter(!is.na(PU.time))
+
+cin_fire_time_bin$PU.time <- as.numeric(cin_fire_time_bin$PU.time)
+
+cin_fire_time_bin <- mutate(cin_fire_time_bin, PU.time.class = ifelse(PU.time %in% 0:99, "Less than 100", 
+                ifelse(PU.time %in% 100:249, "100-250", ifelse(PU.time %in% 250:499, "250-500", 
+                ifelse(PU.time %in% 500:999, "500-1000", ifelse(PU.time %in% 1000:45000, " More than 1000", "000"))))))
+
+cin_fire_time_bin$PU.time.class <- as.factor(cin_fire_time_bin$PU.time.class)
+
+levels(cin_fire_time_bin$PU.time.class) <- c("Less than 100", "100-250", "250-500",
+      "500-1000", "More than 1000")
+
+cin_map + geom_jitter(aes(x = Longitude, y = Latitude, color = PU.time.class),
+         data = cin_fire_time_bin, alpha = .8) + scale_alpha(guide = FALSE) +
+  scale_color_manual(values = c("green", "orangered", "green4", "sienna4", "navyblue"))
+
+## okay, we have a good spatial visualization of the fire calls with different classes of 
+## time taken to arrive at the place. Interstingly, most of the calls with most amount of
+## time lapse are scattered on the outskirts!
+```
